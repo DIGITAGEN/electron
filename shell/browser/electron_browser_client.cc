@@ -31,6 +31,8 @@
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/net_log/chrome_net_log.h"
 #include "components/network_hints/common/network_hints.mojom.h"
+#include "components/ungoogled/persona_profile.h"
+#include "components/ungoogled/ungoogled_switches.h"
 #include "content/browser/keyboard_lock/keyboard_lock_service_impl.h"  // nogncheck
 #include "content/browser/web_contents/web_contents_impl.h"  // nogncheck
 #include "content/public/browser/browser_main_runner.h"
@@ -497,6 +499,24 @@ void ElectronBrowserClient::OverrideWebPreferences(
   if (auto* web_preferences = WebContentsPreferences::From(web_contents)) {
     web_preferences->OverrideWebkitPrefs(prefs, renderer_prefs);
   }
+  if (ungoogled::FingerprintingEnabled() &&
+      ungoogled::CurrentPersona().mobile) {
+    prefs->viewport_enabled = true;
+    prefs->viewport_meta_enabled = true;
+    prefs->viewport_style = blink::mojom::ViewportStyle::kMobile;
+    prefs->shrinks_viewport_contents_to_fit = true;
+    prefs->main_frame_resizes_are_orientation_changes = true;
+    prefs->double_tap_to_zoom_enabled = true;
+    prefs->touch_event_feature_detection_enabled = true;
+    prefs->pointer_events_max_touch_points =
+        ungoogled::CurrentPersona().max_touch_points;
+    prefs->primary_pointer_type = blink::mojom::PointerType::kPointerCoarseType;
+    prefs->available_pointer_types =
+        static_cast<int>(blink::mojom::PointerType::kPointerCoarseType);
+    prefs->primary_hover_type = blink::mojom::HoverType::kHoverNone;
+    prefs->available_hover_types =
+        static_cast<int>(blink::mojom::HoverType::kHoverNone);
+  }
 }
 
 bool ElectronBrowserClient::WebPreferencesNeedUpdateForColorRelatedStateChanges(
@@ -575,6 +595,11 @@ void ElectronBrowserClient::AppendExtraCommandLineSwitches(
 
   std::string process_type =
       command_line->GetSwitchValueASCII(::switches::kProcessType);
+
+  // Fingerprint identity is process-wide, including GPU and network services.
+  // Copy the explicit allowlist before Electron's process-specific handling.
+  ::switches::CopyFingerprintSwitches(*base::CommandLine::ForCurrentProcess(),
+                                      command_line);
 
 #if BUILDFLAG(IS_LINUX)
   pid_t pid;
@@ -1216,6 +1241,8 @@ ElectronBrowserClient::CreateTracingDelegate() {
 }
 
 std::string ElectronBrowserClient::GetUserAgent() {
+  if (user_agent_override_.empty() && ungoogled::FingerprintingEnabled())
+    return embedder_support::GetUserAgent();
   if (user_agent_override_.empty())
     return GetApplicationUserAgent();
   return user_agent_override_;
@@ -1226,7 +1253,9 @@ void ElectronBrowserClient::SetUserAgent(const std::string& user_agent) {
 }
 
 blink::UserAgentMetadata ElectronBrowserClient::GetUserAgentMetadata() {
-  return embedder_support::GetUserAgentMetadata();
+  auto metadata = embedder_support::GetUserAgentMetadata();
+  blink::UpdateUserAgentMetadataFingerprint(&metadata);
+  return metadata;
 }
 
 mojo::PendingRemote<network::mojom::URLLoaderFactory>
